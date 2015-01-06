@@ -699,73 +699,6 @@ sub cm_merge {
   } else {
     # Automatic merge
     # --------------------------------------------------------------------------
-    # Check to ensure source branch is not the same as the target branch
-    if (!$target->branch()) {
-      return _cm_err(FCM1::Cm::Exception->WC_INVALID_BRANCH, $wct);
-    }
-    if ($source->branch() eq $target->branch()) {
-      return _cm_err(FCM1::Cm::Exception->MERGE_SELF, $target->url_peg(), $wct);
-    }
-
-    # Only allow the merge if the source and target are "directly related"
-    # --------------------------------------------------------------------------
-    my $anc = $target->ancestor ($source);
-    return _cm_err(
-      FCM1::Cm::Exception->MERGE_UNRELATED, $target->url_peg(), $source->url_peg
-    ) unless
-      ($anc->url eq $target->url and $anc->url_peg eq $source->parent->url_peg)
-      or
-      ($anc->url eq $source->url and $anc->url_peg eq $target->parent->url_peg)
-      or
-      ($anc->url eq $source->parent->url and $anc->url eq $target->parent->url);
-
-    # Check for available merges from the source
-    # --------------------------------------------------------------------------
-    my @revs = $target->avail_merge_from ($source, 1);
-
-    if (@revs) {
-      if ($option_ref->{verbose}) {
-        # Verbose mode, print log messages of available merges
-        $CLI_MESSAGE->('MERGE_REVS', $source->path_peg(), q{});
-        for (@revs) {
-          $CLI_MESSAGE->('SEPARATOR');
-          $CLI_MESSAGE->(q{}, $source->display_svnlog($_));
-        }
-        $CLI_MESSAGE->('SEPARATOR');
-      }
-      else {
-        # Normal mode, list revisions of available merges
-        $CLI_MESSAGE->('MERGE_REVS', $source->path_peg(), join(q{ }, @revs));
-      }
-
-    } else {
-      return _cm_abort(FCM1::Cm::Abort->NULL);
-    }
-
-    # If more than one merge available, prompt user to enter a revision number
-    # to merge from, default to $revs [0]
-    # --------------------------------------------------------------------------
-    if ($option_ref->{'non-interactive'} || @revs == 1) {
-      $source->url_peg($source->url() . '@' . $revs[0]);
-    }
-    else {
-      my $reply = $CLI_PROMPT->(
-        {type => q{}, default => $revs[0]}, 'merge', 'MERGE_REV',
-      );
-      if (!defined($reply)) {
-        return _cm_abort();
-      }
-      # Expand revision keyword if necessary
-      if ($reply) {
-        $reply = (FCM1::Keyword::expand($target->project_url(), $reply))[1];
-      }
-      # Check that the reply is a number in the available merges list
-      if (!grep {$_ eq $reply} @revs) {
-        return _cm_err(FCM1::Cm::Exception->MERGE_REV_INVALID, $reply)
-      }
-      $source->url_peg($source->url() . '@' . $reply);
-    }
-
     # If the working copy top is pointing to a sub-directory of a branch,
     # we need to check whether the merge will result in losing changes made in
     # other sub-directories of the source.
@@ -773,27 +706,18 @@ sub cm_merge {
       return _cm_err(FCM1::Cm::Exception->MERGE_UNSAFE, $source->url_peg());
     }
 
-    # Calculate the base of the merge
-    my $base = $target->base_of_merge_from ($source);
-
     # $source and $base must take into account the sub-directory
     my $source_full = FCM1::CmBranch->new (URL => $source->url_peg);
-    my $base_full = FCM1::CmBranch->new (URL => $base->url_peg);
 
     if ($subdir) {
       $source_full->url_peg(
         $source_full->branch_url() . '/' . $subdir . '@' . $source_full->pegrev()
       );
-      $base_full->url_peg(
-        $base_full->branch_url() . '/' . $subdir . '@' . $base_full->pegrev()
-      );
     }
 
     # Diagnostic
-    $CLI_MESSAGE->('SEPARATOR'); 
-    $CLI_MESSAGE->('MERGE_COMPARE', $source->path_peg(), $base->path_peg()); 
     # Delta of the "svn merge" command
-    @delta = ($base_full->url_peg, $source_full->url_peg);
+    @delta = ($source_full->url_peg);
 
     # Template message
     $mesg = sprintf(
@@ -802,14 +726,10 @@ sub cm_merge {
     );
 
     if (exists($option_ref->{'auto-log'})) {
-      my $last_merge_from_source = ($target->last_merge_from($source))[1];
-      if (!defined($last_merge_from_source)) {
-        $last_merge_from_source = $target->ancestor($source);
+      my $mergeinfo_output = $SVN->stdout(qw{svn mergeinfo --show-revs eligible}, @delta);
+      while (my $mergeinfo_output =~ qr{^r(\d+)$}msx) {
+        push(@logs, $source->svnlog(REV => $1, $source->pegrev()));  
       }
-      my %log_entries = $source->svnlog(
-        REV => [$last_merge_from_source->pegrev() + 1, $source->pegrev()],
-      );
-      @logs = sort {$b->{'revision'} <=> $a->{'revision'}} values(%log_entries);
     }
   }
 
